@@ -12,6 +12,7 @@ import scipy.io
 import latex
 from scipy.interpolate import griddata
 import time
+import meshio
 from itertools import product, combinations
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -207,40 +208,46 @@ def axisEqual3D(ax):
         
         
 if __name__ == "__main__": 
-    print("test 1 complete")  
-    print("test 2 complete")  
-    print("test 3 complete")  
     N_train = 50
     
     layers = [3, 20, 20, 20, 20, 20, 20, 20, 20, 2]
     
     # Load Data
-    data = scipy.io.loadmat('../Data/cylinder_nektar_wake.mat')
-           
-    U_star = data['U_star'] # N x 2 x T
-    P_star = data['p_star'] # N x T
-    t_star = data['t'] # T x 1
-    X_star = data['X_star'] # N x 2
+   # ——————————————————————————————————————————————————————————————————
+    mesh = meshio.read(
+    filename='/Users/howardxu/work/neuro-net/Physics-informed-neural-networks/main/Data/rec000068.vtu', 
+    # string, os.PathLike, or a buffer/open file
+      # optional if filename is a path; inferred from extension
+    )    
     
-    N = X_star.shape[0]
-    T = t_star.shape[0]
-    
-    # Rearrange Data 
-    XX = np.tile(X_star[:,0:1], (1,T)) # N x T
-    YY = np.tile(X_star[:,1:2], (1,T)) # N x T
-    TT = np.tile(t_star, (1,N)).T # N x T
-    
-    UU = U_star[:,0,:] # N x T
-    VV = U_star[:,1,:] # N x T
-    PP = P_star # N x T
+    x=mesh.points[:,0]
+    y=mesh.points[:,1]
+    t=np.arange(50);
+
+    u=mesh.point_data['flds1']#x
+    v=mesh.point_data['flds2']#y
+    p=mesh.point_data['flds3']#pressure
+    N = x.shape[0]
+    T = t.shape[0]#40800
+   # ——————————————————————————————————————————————————————————————————    
+4284
+    x=x.flatten()[:,None]
+    y=y.flatten()[:,None]
+    t=t.flatten()[:,None]
+    XX = np.tile(x, (1,T)) # N x T
+    YY = np.tile(y, (1,T)) # N x T
+    TT = np.tile(t, (N,1)) # N x T
+    UU = np.tile(u, (1,T))
+    VV = np.tile(v, (1,T))
+    PP = np.tile(p, (1,T))
     
     x = XX.flatten()[:,None] # NT x 1
     y = YY.flatten()[:,None] # NT x 1
     t = TT.flatten()[:,None] # NT x 1
     
-    u = UU.flatten()[:,None] # NT x 1
-    v = VV.flatten()[:,None] # NT x 1
-    p = PP.flatten()[:,None] # NT 
+    #u = UU.flatten()[:,None] # NT x 1
+    #v = VV.flatten()[:,None] # NT x 1
+    #p = PP.flatten()[:,None] # NT 
     
     ######################################################################
     ######################## Noiseles Data ###############################
@@ -250,22 +257,24 @@ if __name__ == "__main__":
     x_train = x[idx,:]
     y_train = y[idx,:]
     t_train = t[idx,:]
-    u_train = u[idx,:]
-    v_train = v[idx,:]
+    u_train = u[np.concatenate(t[idx,:]),:]
+    v_train = v[np.concatenate(t[idx,:]),:]
 
     # Training
     model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
     model.train(500)
     
+    t=np.arange(50);
+    TT = np.tile(t, (N,1))
     # Test Data
-    snap = np.array([100])
-    x_star = X_star[:,0:1]
-    y_star = X_star[:,1:2]
+    snap = np.array([10])
+    x_star = XX[:,snap]
+    y_star = YY[:,snap]
     t_star = TT[:,snap]
     
-    u_star = U_star[:,0,snap]
-    v_star = U_star[:,1,snap]
-    p_star = P_star[:,snap]
+    u_star = UU[:,snap]
+    v_star = VV[:,snap]
+    p_star = PP[:,snap]
     
     # Prediction
     u_pred, v_pred, p_pred = model.predict(x_star, y_star, t_star)
@@ -292,8 +301,12 @@ if __name__ == "__main__":
 #    plot_solution(X_star, p_pred, 3)    
 #    plot_solution(X_star, p_star, 4)
 #    plot_solution(X_star, p_star - p_pred, 5)
-    
+     
+    #Import again in case of override
+    x1=mesh.points[:,0]
+    y1=mesh.points[:,1]
     # Predict for plotting
+    X_star=np.concatenate([x1.flatten()[:,None],y1.flatten()[:,None]],axis=1)
     lb = X_star.min(0)
     ub = X_star.max(0)
     nn = 200

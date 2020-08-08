@@ -208,9 +208,9 @@ def axisEqual3D(ax):
         
         
 if __name__ == "__main__": 
-    N_train = 50
+    N_train = 100
     
-    layers = [3, 20, 20, 20, 20, 20, 20, 20, 20, 2]
+    layers = [3, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30] #11
     
     # Load Data
    # ——————————————————————————————————————————————————————————————————
@@ -222,15 +222,15 @@ if __name__ == "__main__":
     
     x=mesh.points[:,0]
     y=mesh.points[:,1]
-    t=np.arange(50);
+    t=np.arange(0,68*1.467451833203625E-004,1.467451833203625E-004);
 
     u=mesh.point_data['flds1']#x
     v=mesh.point_data['flds2']#y
     p=mesh.point_data['flds3']#pressure
     N = x.shape[0]
-    T = t.shape[0]#40800
+    T = t.shape[0]
    # ——————————————————————————————————————————————————————————————————    
-4284
+
     x=x.flatten()[:,None]
     y=y.flatten()[:,None]
     t=t.flatten()[:,None]
@@ -245,9 +245,9 @@ if __name__ == "__main__":
     y = YY.flatten()[:,None] # NT x 1
     t = TT.flatten()[:,None] # NT x 1
     
-    #u = UU.flatten()[:,None] # NT x 1
-    #v = VV.flatten()[:,None] # NT x 1
-    #p = PP.flatten()[:,None] # NT 
+    u = UU.flatten()[:,None] # NT x 1
+    v = VV.flatten()[:,None] # NT x 1
+    p = PP.flatten()[:,None] # NT 
     
     ######################################################################
     ######################## Noiseles Data ###############################
@@ -257,14 +257,13 @@ if __name__ == "__main__":
     x_train = x[idx,:]
     y_train = y[idx,:]
     t_train = t[idx,:]
-    u_train = u[np.concatenate(t[idx,:]),:]
-    v_train = v[np.concatenate(t[idx,:]),:]
+    u_train = u[idx,:]
+    v_train = v[idx,:]
 
     # Training
     model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
-    model.train(500)
-    
-    t=np.arange(50);
+    model.train(1000)
+    t=np.arange(0,68*1.467451833203625E-004,1.467451833203625E-004);
     TT = np.tile(t, (N,1))
     # Test Data
     snap = np.array([10])
@@ -323,22 +322,22 @@ if __name__ == "__main__":
     ######################################################################
     ########################### Noisy Data ###############################
     ######################################################################
-    noise = 0.01        
-    u_train = u_train + noise*np.std(u_train)*np.random.randn(u_train.shape[0], u_train.shape[1])
-    v_train = v_train + noise*np.std(v_train)*np.random.randn(v_train.shape[0], v_train.shape[1])    
+    # noise = 0.01        
+    # u_train = u_train + noise*np.std(u_train)*np.random.randn(u_train.shape[0], u_train.shape[1])
+    # v_train = v_train + noise*np.std(v_train)*np.random.randn(v_train.shape[0], v_train.shape[1])    
 
-    # Training
-    model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
-    model.train(500)
+    # # Training
+    # model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
+    # model.train(1000)
         
-    lambda_1_value_noisy = model.sess.run(model.lambda_1)
-    lambda_2_value_noisy = model.sess.run(model.lambda_2)
+    # lambda_1_value_noisy = model.sess.run(model.lambda_1)
+    # lambda_2_value_noisy = model.sess.run(model.lambda_2)
       
-    error_lambda_1_noisy = np.abs(lambda_1_value_noisy - 1.0)*100
-    error_lambda_2_noisy = np.abs(lambda_2_value_noisy - 0.01)/0.01 * 100
+    # error_lambda_1_noisy = np.abs(lambda_1_value_noisy - 1.0)*100
+    # error_lambda_2_noisy = np.abs(lambda_2_value_noisy - 0.01)/0.01 * 100
         
-    print('Error l1: %.5f%%' % (error_lambda_1_noisy))                             
-    print('Error l2: %.5f%%' % (error_lambda_2_noisy))     
+    # print('Error l1: %.5f%%' % (error_lambda_1_noisy))                             
+    # print('Error l2: %.5f%%' % (error_lambda_2_noisy))     
 
              
     

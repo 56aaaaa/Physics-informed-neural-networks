@@ -1,5 +1,6 @@
 """
 @author: Maziar Raissi
+
 """
 
 import sys
@@ -9,6 +10,7 @@ import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.io
+import scipy.optimize
 import latex
 from scipy.interpolate import griddata
 import time
@@ -19,17 +21,19 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from plotting import newfig, savefig
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.gridspec as gridspec
-
+import tensorflow_docs as tfdocs
+import tensorflow_docs.plots
+import tensorflow_docs.modeling
+import tensorflow_probability as tfp
 np.random.seed(1234)
-tf.set_random_seed(1234)
-#tf.random.set_seed(1234)
+tf.random.set_seed(1234)
 
 class PhysicsInformedNN:
     # Initialize the class
     def __init__(self, x, y, t, u, v, layers):
         
         X = np.concatenate([x, y, t], 1)
-        
+        Y = np.concatenate([u, v], 1)
         self.lb = X.min(0)
         self.ub = X.max(0)
                 
@@ -43,46 +47,53 @@ class PhysicsInformedNN:
         self.v = v
         
         self.layers = layers
-        
-        # Initialize NN
-        self.weights, self.biases = self.initialize_NN(layers)        
+        self.weights, self.biases = self.initialize_NN(layers)
+        self.dtype = "float32"
+        # Descriptive Keras model 
+        #print("weights",self.weights)
+        # tf.keras.backend.set_floatx(self.dtype)
+        # self.model = tf.keras.Sequential()
+        # self.model.add(tf.keras.layers.InputLayer(input_shape=(layers[0],)))
+        # self.model.add(tf.keras.layers.Lambda(
+        #     lambda X: 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0))
+        #         # Initialize NN
+        # for width in layers[1:-1]:
+        #     self.model.add(tf.keras.layers.Dense(
+        #         width, activation=tf.nn.tanh,
+        #         kernel_initializer="glorot_normal"))
+        # self.model.add(tf.keras.layers.Dense(
+        #         layers[-1], activation=None,
+        #         kernel_initializer="glorot_normal"))
         
         # Initialize parameters
         self.lambda_1 = tf.Variable([0.0], dtype=tf.float32)
         self.lambda_2 = tf.Variable([0.0], dtype=tf.float32)
         
         # tf placeholders and graph
-        self.sess = tf.Session(config=tf.compat.v1.ConfigProto(allow_soft_placement=True,
-                                                     log_device_placement=True))
-        
-        self.x_tf = tf.placeholder(tf.float32, shape=[None, self.x.shape[1]])
-        self.y_tf = tf.placeholder(tf.float32, shape=[None, self.y.shape[1]])
-        self.t_tf = tf.placeholder(tf.float32, shape=[None, self.t.shape[1]])
-        
-        self.u_tf = tf.placeholder(tf.float32, shape=[None, self.u.shape[1]])
-        self.v_tf = tf.placeholder(tf.float32, shape=[None, self.v.shape[1]])
-        
-        self.u_pred, self.v_pred, self.p_pred, self.f_u_pred, self.f_v_pred = self.net_NS(self.x_tf, self.y_tf, self.t_tf)
-        
-        self.loss = tf.reduce_sum(tf.square(self.u_tf - self.u_pred)) + \
-                    tf.reduce_sum(tf.square(self.v_tf - self.v_pred)) + \
-                    tf.reduce_sum(tf.square(self.f_u_pred)) + \
-                    tf.reduce_sum(tf.square(self.f_v_pred))
-                    
-        self.optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss, 
-                                                                method = 'L-BFGS-B', 
-                                                                options = {'maxiter': 50000,
-                                                                           'maxfun': 50000,
-                                                                           'maxcor': 50,
-                                                                           'maxls': 50,
-                                                                           'ftol' : 1.0 * np.finfo(float).eps})        
-        
-        self.optimizer_Adam = tf.train.AdamOptimizer()
-        self.train_op_Adam = self.optimizer_Adam.minimize(self.loss)                    
-        
-        init = tf.global_variables_initializer()
-        self.sess.run(init)
+        self.x = tf.Variable(X[:,0:1],dtype=tf.float32)
+        self.y = tf.Variable(X[:,1:2],dtype=tf.float32)
+        self.t = tf.Variable(X[:,2:3],dtype=tf.float32)
+              
+        self.u_pred, self.v_pred, self.p_pred, self.f_u_pred, self.f_v_pred = self.net_NS(self.x, self.y, self.t)
 
+        
+        self.u = tf.Variable(u,dtype=tf.float32)
+        self.v = tf.Variable(v,dtype=tf.float32)     
+        self.Y = Y 
+
+                    
+        # self.optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss, 
+        #                                                          method = 'L-BFGS-B', 
+        #                                                          options = {'maxiter': 50000,
+        #                                                                     'maxfun': 50000,
+        #                                                                     'maxcor': 50,
+        #                                                                     'maxls': 50,
+        #                                                                     'ftol' : 1.0 * np.finfo(float).eps})        
+        
+                 
+
+        
+        
     def initialize_NN(self, layers):        
         weights = []
         biases = []
@@ -102,7 +113,6 @@ class PhysicsInformedNN:
     
     def neural_net(self, X, weights, biases):
         num_layers = len(weights) + 1
-        
         H = 2.0*(X - self.lb)/(self.ub - self.lb) - 1.0
         for l in range(0,num_layers-2):
             W = weights[l]
@@ -112,64 +122,168 @@ class PhysicsInformedNN:
         b = biases[-1]
         Y = tf.add(tf.matmul(H, W), b)
         return Y
-        
+    
     def net_NS(self, x, y, t):
         lambda_1 = self.lambda_1
         lambda_2 = self.lambda_2
-        
-        psi_and_p = self.neural_net(tf.concat([x,y,t], 1), self.weights, self.biases)
-        psi = psi_and_p[:,0:1]
-        p = psi_and_p[:,1:2]
-        
-        u = tf.gradients(psi, y)[0]
-        v = -tf.gradients(psi, x)[0]  
-        
-        u_t = tf.gradients(u, t)[0]
-        u_x = tf.gradients(u, x)[0]
-        u_y = tf.gradients(u, y)[0]
-        u_xx = tf.gradients(u_x, x)[0]
-        u_yy = tf.gradients(u_y, y)[0]
-        print(u_yy)
-        v_t = tf.gradients(v, t)[0]
-        v_x = tf.gradients(v, x)[0]
-        v_y = tf.gradients(v, y)[0]
-        v_xx = tf.gradients(v_x, x)[0]
-        v_yy = tf.gradients(v_y, y)[0]
-        
-        p_x = tf.gradients(p, x)[0]
-        p_y = tf.gradients(p, y)[0]
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch(x)
+            tape.watch(y)
+            tape.watch(t)
+            Xtmp=tf.concat([x,y,t], 1)
+            psi_and_p = self.neural_net(Xtmp,self.weights,self.biases)
+            
+            psi = psi_and_p[:,0:1]
+            p = psi_and_p[:,1:2]
+            u = tape.gradient(psi, y) 
+            #print("u :",np.shape(u))
+            v = -tape.gradient(psi, x)
+            #print("v :",np.shape(v))
+            
+            u_t = tape.gradient(u, t)  
+            #print("u_t :",np.shape(u_t))
+            u_x = tape.gradient(u, x)
+            #print("u_x :",np.shape(u_x))
+            u_y = tape.gradient(u, y)
+            #print("u_y :",np.shape(u_y))
+            
+            u_xx = tape.gradient(u_x, x)
+            #print("u_xx :",np.shape(u_xx))
+            u_yy = tape.gradient(u_y, y) 
+            #print("u_yy :",np.shape(u_yy))
+            
+            v_t = tape.gradient(v, t)
+            #print("v_t :",np.shape(v_t))
+            v_x = tape.gradient(v, x) 
+            #print("v_x :",np.shape(v_x))
+            v_y = tape.gradient(v, y)
+            #print("v_y :",np.shape(v_y))
+            v_xx = tape.gradient(v_x, x)  
+            #print("v_xx :",np.shape(v_xx))
+            v_yy = tape.gradient(v_y, y)
+            #print("v_yy :",np.shape(v_yy))
+            p_x = tape.gradient(p, x)
+            #print("p_x :",np.shape(p_x))
+            p_y = tape.gradient(p, y)
+            #print("p_y :",np.shape(p_y))
+    
+            f_u = u_t + lambda_1*(u*u_x + v*u_y) + p_x - lambda_2*(u_xx + u_yy) 
+            f_v = v_t + lambda_1*(u*v_x + v*v_y) + p_y - lambda_2*(v_xx + v_yy)
+            del tape
 
-        f_u = u_t + lambda_1*(u*u_x + v*u_y) + p_x - lambda_2*(u_xx + u_yy) 
-        f_v = v_t + lambda_1*(u*v_x + v*v_y) + p_y - lambda_2*(v_xx + v_yy)
-        
         return u, v, p, f_u, f_v
+    def lambda12(self, x, y, t):
+        lambda_1 = self.lambda_1
+        lambda_2 = self.lambda_2
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch(x)
+            tape.watch(y)
+            tape.watch(t)
+            Xtmp=tf.concat([x,y,t], 1)
+            psi_and_p = self.neural_net(Xtmp,self.weights,self.biases)
+        
+            psi = psi_and_p[:,0:1]
+            p = psi_and_p[:,1:2]
+            u = tape.gradient(psi, y) 
+            #print("u :",np.shape(u))
+            v = -tape.gradient(psi, x)
+            #print("v :",np.shape(v))
+            
+            u_t = tape.gradient(u, t)  
+            #print("u_t :",np.shape(u_t))
+            u_x = tape.gradient(u, x)
+            #print("u_x :",np.shape(u_x))
+            u_y = tape.gradient(u, y)
+            #print("u_y :",np.shape(u_y))
+            
+            u_xx = tape.gradient(u_x, x)
+            #print("u_xx :",np.shape(u_xx))
+            u_yy = tape.gradient(u_y, y) 
+            #print("u_yy :",np.shape(u_yy))
+            
+            v_t = tape.gradient(v, t)
+            #print("v_t :",np.shape(v_t))
+            v_x = tape.gradient(v, x) 
+            #print("v_x :",np.shape(v_x))
+            v_y = tape.gradient(v, y)
+            #print("v_y :",np.shape(v_y))
+            v_xx = tape.gradient(v_x, x)  
+            #print("v_xx :",np.shape(v_xx))
+            v_yy = tape.gradient(v_y, y)
+            #print("v_yy :",np.shape(v_yy))
+            p_x = tape.gradient(p, x)
+            #print("p_x :",np.shape(p_x))
+            p_y = tape.gradient(p, y)
+            #print("p_y :",np.shape(p_y))
+            fu1 = (u*u_x + v*u_y)
+            fu2 = (u_xx + u_yy) 
+            fu3 = u_t + p_x
+            fv1 = (u*v_x + v*v_y)
+            fv2 = (v_xx + v_yy)
+            fv3 = v_t + p_y 
+            # f_u =  self.lambda_1*fu1 - lambda_2*fu2+fu3
+            # f_v =  self.lambda_1*fu1 - lambda_2*fu2+fu3
+            del tape
+
+        return fu1,fu2,fu3,fv1,fv2,fv3 
     
     def callback(self, loss, lambda_1, lambda_2):
         print('Loss: %.3e, l1: %.3f, l2: %.5f' % (loss, lambda_1, lambda_2))
-      
-    def train(self, nIter): 
-
-        tf_dict = {self.x_tf: self.x, self.y_tf: self.y, self.t_tf: self.t,
-                   self.u_tf: self.u, self.v_tf: self.v}
         
+    def grad(self, X, Y):
+        with tf.GradientTape() as tape:
+            loss_value = self.lossval
+        grads = tape.gradient(loss_value, self.wrap_training_variables())
+        return loss_value, grads
+    
+    def train(self, nIter): 
         start_time = time.time()
+        trainable=[self.x, self.y, self.t,self.u, self.v, self.lambda_1, self.lambda_2]
+        
         for it in range(nIter):
-            self.sess.run(self.train_op_Adam, tf_dict)
-            
-            # Print
-            if it % 10 == 0:
+            with tf.GradientTape(persistent=True) as tape:
+             [fu1,fu2,fu3,fv1,fv2,fv3] = self.lambda12(self.x,self.y,self.t)
+             loss = lambda:tf.reduce_sum(tf.square(self.u - self.u_pred)) + \
+                    tf.reduce_sum(tf.square(self.v - self.v_pred)) + \
+                    tf.reduce_sum(tf.square(fu1*self.lambda_1+fu2*self.lambda_2+fu3)) + \
+                    tf.reduce_sum(tf.square(fv1*self.lambda_1+fv2*self.lambda_2+fv3))      
+             lossval = tf.reduce_sum(tf.square(self.u - self.u_pred)) + \
+                       tf.reduce_sum(tf.square(self.v - self.v_pred)) + \
+                       tf.reduce_sum(tf.square(self.f_u_pred)) + \
+                       tf.reduce_sum(tf.square(self.f_v_pred))           
+             grads = tape.gradient(lossval,trainable)       
+             optimizer_Adam = tf.keras.optimizers.Adam()
+             optimizer_Adam.apply_gradients(zip(grads, trainable))
+             optimizer_Adam.minimize(loss,trainable)
+             del tape
+                # Print
+
+             if it % 10 == 0:
                 elapsed = time.time() - start_time
-                loss_value = self.sess.run(self.loss, tf_dict)
-                lambda_1_value = self.sess.run(self.lambda_1)
-                lambda_2_value = self.sess.run(self.lambda_2)
+                loss_value = lossval
+                lambda_1_value = self.lambda_1
+                lambda_2_value = self.lambda_2
                 print('It: %d, Loss: %.3e, l1: %.3f, l2: %.5f, Time: %.2f' % 
                       (it, loss_value, lambda_1_value, lambda_2_value, elapsed))
                 start_time = time.time()
-            
-        self.optimizer.minimize(self.sess,
-                                feed_dict = tf_dict,
-                                fetches = [self.loss, self.lambda_1, self.lambda_2],
-                                loss_callback = self.callback)
+
+        # optimizer_results=tfp.optimizer.lbfgs_minimize(
+        #     self.loss, 
+        #     initial_position=np.random.randn(dim),f_relative_tolerance=1.0 * np.finfo(float).eps,
+        #     max_iterations=50000,tolerance=1e-08
+        #     )
+        
+        # print(optimizer_results)
+        # print("TTTTTTTT",[lambda_1_value,lambda_2_value,self.x_tf,self.y_tf, self.t_tf])
+        
+        # scipy.optimize.minimize(fun=self.loss,x0=[self.sess.run(self.lambda_1),self.sess.run(self.lambda_2),self.sess.run(self.x_tf), self.sess.run(self.y_tf), self.sess.run(self.t_tf)],
+        #                         method='l-bfgs-b',options = {'maxiter': 50000,
+        #                                                      'maxfun': 50000,
+        #                                                      'maxcor': 50,
+        #                                                      'maxls': 50,
+        #                                                      'ftol' : 1.0 * np.finfo(float).eps})
+                
+        
             
     
     def predict(self, x_star, y_star, t_star):
@@ -211,7 +325,7 @@ def axisEqual3D(ax):
 if __name__ == "__main__": 
     N_train = 500
     
-    layers = [3, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100] #11
+    layers = [3, 100, 100, 100, 100, 100, 100, 100, 100, 100, 2]
     
     # Load Data
    # ——————————————————————————————————————————————————————————————————
@@ -263,7 +377,7 @@ if __name__ == "__main__":
 
     # Training
     model = PhysicsInformedNN(x_train, y_train, t_train, u_train, v_train, layers)
-    model.train(1000)
+    model.train(50)
     t=np.arange(0,68*1.467451833203625E-004,1.467451833203625E-004);
     TT = np.tile(t, (N,1))
     # Test Data
